@@ -1,0 +1,150 @@
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      # Keep in step with the Dockerfile's builder image: testing on one Rust
+      # release and shipping a binary built by another is how a release breaks
+      # in a way CI cannot see.
+      - image: cimg/rust:1.98.0
+
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            # Exact match for this dependency set, otherwise the newest cache
+            # from any other set, which still saves most of the compile.
+            - project-cache-v2-{{ checksum "Cargo.lock" }}
+            - project-cache-v2-
+      - run:
+          name: Formatting
+          command: cargo fmt --all -- --check
+      - run:
+          name: Clippy
+          command: cargo clippy --all-targets --all-features -- -D warnings
+      - run:
+          name: Stable Build
+          command: |
+            cargo build --locked
+      - run:
+          name: Test
+          command: cargo test --verbose --jobs 1 --all --locked
+      - save_cache:
+          key: project-cache-v2-{{ checksum "Cargo.lock" }}
+          paths:
+            - "~/.cargo"
+            - "./target"
+
+  # The publish jobs below are the first thing to touch the Dockerfile, and they
+  # only run on main and on tags. This builds the image on every branch so that a
+  # broken Dockerfile surfaces on the pull request instead of at release time.
+  docker-build:
+    docker:
+      - image: cimg/base:stable
+    resource_class: large
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: default
+      - run:
+          name: Build the image for the native platform
+          command: |
+            docker build \
+              --build-arg VERSION=ci-${CIRCLE_SHA1} \
+              --build-arg COMMITID=${CIRCLE_SHA1} \
+              -t azure_ai_gateway:ci .
+      - run:
+          name: Smoke test the image
+          command: |
+            # Runs the binary inside the runtime stage, which is what catches a
+            # builder and runtime that disagree about glibc, plus the file modes
+            # that decide whether the service can read its own config. The
+            # runtime image is distroless, so there is no shell to poke at
+            # files with: the service has to start and answer requests. curl
+            # runs in a sidecar sharing the container's network namespace,
+            # because the remote docker host's ports are not reachable from
+            # this job.
+            docker run --rm azure_ai_gateway:ci azure_ai_gateway --help
+            test "$(docker inspect --format '{{.Config.User}}' azure_ai_gateway:ci)" = "nonroot"
+            docker run -d --name azure_ai_gateway-ci azure_ai_gateway:ci
+            trap 'docker logs azure_ai_gateway-ci; docker rm -f azure_ai_gateway-ci' EXIT
+            test "$(docker top azure_ai_gateway-ci -o uid,pid | awk 'NR == 2 { print $1 }')" = "65532"
+            curl() { docker run --rm --network container:azure_ai_gateway-ci curlimages/curl:8.23.0 -sS "$@"; }
+            # No Ollama in CI: an unknown route is answered with an
+            # Azure-style 404 without touching the backend.
+            curl --retry 10 --retry-connrefused --retry-delay 1 http://localhost:8135/ | grep '"NotFound"'
+
+  publish-docker-latest:
+    docker:
+      - image: cimg/base:stable
+    resource_class: large
+    steps:
+      - setup_remote_docker:
+          version: default
+      - checkout
+      - run:
+          name: Create the Multi Arch build structure
+          command: |
+            docker context create multi-arch-context
+            docker buildx create --use multi-arch-context
+      - run:
+          name: Docker build and push
+          no_output_timeout: 1.5h
+          command: |
+            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+            docker buildx build --platform=linux/amd64,linux/arm64 --push \
+              --progress=plain\
+              -t cafienne/azure-ai-gateway:latest \
+              --build-arg VERSION=${CIRCLE_SHA1} \
+              --build-arg COMMITID=${CIRCLE_SHA1} \
+              .
+
+  publish-docker-release:
+    docker:
+      - image: cimg/base:stable
+    resource_class: large
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: default
+      - run:
+          name: Create the Multi Arch build structure
+          command: |
+            docker context create multi-arch-context
+            docker buildx create --use multi-arch-context --name multi-arch-builder
+      - run:
+          name: Docker build and push
+          no_output_timeout: 1.5h
+          command: |
+            echo `git describe --tags --exact-match` > /tmp/version.txt
+            TAG=$(cat /tmp/version.txt)
+            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+            docker buildx build --platform=linux/arm64,linux/amd64 --push \
+              --progress=plain\
+              -t cafienne/azure-ai-gateway:$TAG \
+              -t cafienne/azure-ai-gateway:latest \
+              --build-arg VERSION=$(cat /tmp/version.txt) \
+              --build-arg COMMITID=${CIRCLE_SHA1} \
+              .
+
+workflows:
+  version: 2
+  ci:
+    jobs:
+      - build
+      - docker-build
+      - publish-docker-latest:
+          context: DOCKER
+          requires:
+            - build
+            - docker-build
+          filters:
+            branches:
+              only: main
+      - publish-docker-release:
+          context: DOCKER
+          filters:
+            tags:
+              only: /.*/
+            branches:
+              ignore: /.*/
