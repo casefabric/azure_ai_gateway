@@ -167,6 +167,20 @@ cargo clippy
 cargo fmt
 ```
 
+## Publishing the Docker image (CircleCI)
+
+`.circleci/config.yml` builds and pushes `cafienne/azure-ai-gateway` (multi-arch `linux/amd64` +
+`linux/arm64`): `publish-docker-latest` on every push to `main`, `publish-docker-release` on tags.
+Both jobs run with the CircleCI context `automation-context`, which must contain:
+
+- `DOCKER_USER` — Docker Hub username
+- `DOCKER_PASS` — Docker Hub access token for an account that can push to `cafienne/azure-ai-gateway`
+
+```bash
+circleci context secret set automation-context --org gh/casefabric --name DOCKER_USER
+circleci context secret set automation-context --org gh/casefabric --name DOCKER_PASS
+```
+
 [CLAUDE.md](CLAUDE.md) describes the architecture, the routes and the translation details.
 
 ## License
