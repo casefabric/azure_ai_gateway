@@ -1,0 +1,19 @@
+# Host build artifacts must never enter the image: they are the wrong
+# platform's objects and would land on top of the container's own target dir.
+target/
+
+# Request logs can hold prompts and answers (--request-log full).
+logs/
+
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+
+# Environment files hold API keys; they are passed at run time, not built in.
+.env
+.env.*
+
+# Docs and manual test scripts play no part in the build.
+tools/
+*.md

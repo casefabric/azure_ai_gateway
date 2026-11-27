@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+
+# Docker build artifacts
+*.tar
+*.tar.gz
+docker-compose.override.yml
+.docker/
+
+# Runtime output
+/logs
+
+# Local environment (API keys)
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
