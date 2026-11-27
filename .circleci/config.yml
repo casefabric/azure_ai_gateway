@@ -27,8 +27,20 @@ jobs:
           command: |
             cargo build --locked
       - run:
+          name: Install cargo-nextest
+          # Pinned so CI is reproducible; cached in ~/.cargo with everything else.
+          command: cargo install cargo-nextest --locked --version 0.9.152
+      - run:
           name: Test
-          command: cargo test --verbose --jobs 1 --all --locked
+          # nextest emits JUnit XML (.config/nextest.toml) for CircleCI's
+          # Tests tab; `cargo test` can't produce JUnit on stable Rust.
+          # `--jobs 1` runs tests serially. (No library or doc tests; nextest
+          # covers all unit and integration tests.)
+          command: cargo nextest run --all --locked --jobs 1
+      # Upload results even when tests fail, so failures show on the Tests tab.
+      - store_test_results:
+          path: target/nextest/default/junit.xml
+          when: always
       - save_cache:
           key: project-cache-v2-{{ checksum "Cargo.lock" }}
           paths:
